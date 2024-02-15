@@ -1,0 +1,725 @@
+/* Auto-generated ProgramImpl Code */
+
+import java.util.*;              /* java Predefined*/
+import javax.baja.nre.util.*;    /* nre Predefined*/
+import javax.baja.sys.*;         /* baja Predefined*/
+import javax.baja.status.*;      /* baja Predefined*/
+import javax.baja.util.*;        /* baja Predefined*/
+import com.tridium.program.*;    /* program-rt Predefined*/
+import javax.baja.collection.*;  /* baja User Defined*/
+import javax.baja.driver.*;      /* driver-rt User Defined*/
+import javax.baja.control.*;     /* control-rt User Defined*/
+import javax.baja.driver.point.*; /* driver-rt User Defined*/
+import javax.baja.bacnet.datatypes.*; /* bacnet-rt User Defined*/
+import javax.baja.bacnet.export.*; /* bacnet-rt User Defined*/
+import com.tridium.bacnet.stack.server.*; /* bacnet-rt User Defined*/
+import com.tridium.nd.*;         /* niagaraDriver-rt User Defined*/
+import javax.baja.bacnet.*;      /* bacnet-rt User Defined*/
+import javax.baja.naming.*;      /* baja User Defined*/
+import javax.baja.file.*;        /* baja User Defined*/
+import java.io.*;                /* java User Defined*/
+import com.tridium.platform.*;   /* platform-rt User Defined*/
+import com.tridium.bacnet.stack.link.*; /* bacnet-rt User Defined*/
+import com.tridium.bacnet.stack.network.*; /* bacnet-rt User Defined*/
+import javax.baja.job.*;         /* baja User Defined*/
+import java.util.concurrent.*;   /* java User Defined*/
+import javax.baja.alarm.*;       /* alarm-rt User Defined*/
+
+public class ProgramImpl
+  extends com.tridium.program.ProgramBase
+{
+
+////////////////////////////////////////////////////////////////
+// Program Source
+////////////////////////////////////////////////////////////////
+
+  /*
+  BACnet Export Wizard
+  Written by Carey Buchta Jan 2024
+  
+  *Program Summary
+  This program is designed to iterate through station driver networks and automate the creation of BACnet
+  export objects from BControl points under the driver network devices.
+  
+  *Version Information
+  0.0 - Initial creation of program
+  1.0 - Working version of program concept 
+  1.1 - Added creation of csv file for BACnet export points
+  1.2 - Modified program to run as a job service
+  
+  *Program Details
+  1. Iterate through station components and locate the BACnet export table. 
+     If the table exits then assign the export table slot path to a variable. Else exit program.
+  2. Iterate through station components and locate any driver networks.
+     If a non Niagara or non BACnet network exists then continue. Else exit program.
+     Typically would not want to export those networks, just legacy networks.
+  3. Delete any existing components in BACnet export table to prepare for new component creation.
+  4. Iterate through device networks, for each network found create new network export folder.
+     Iterate through network devices, for each device found create new device export folder inside network folder.
+     Iterate through device points, for each point found create new export object inside device folder. 
+  5. Finally, iterate through export table and create csv file with export points and instance numbers to use as cheat sheet.
+  
+  *Note 
+  To have better export table layout, recommend sorting devices into common device type folders
+  in each network before running program so instance numbers will be created in a common pattern.
+  
+  */
+  
+  // Declare variables to hold instance numbers for export objects
+  int ai, ao, bi, bo, msi, mso, expFldr;
+  
+  // Initialize String constant to hold BACnet write level
+  String BACNET_WRITABLE = "in1,in2,in3,in4,in5,in6,in7,in8,in9,in10,in11,in12,in13,in14,in15,in16";
+  
+  // Declare and initialize starting instance for export objects 
+  // Each folder created for networks will be incremented by this number, keep in multiples of 10k
+  // Each folder created for devices will be incremented by 100
+  int STARTING_INSTANCE = 100000;
+  
+  // Declare export table slot path for multiple methods
+  String exportTableSlotPath;
+  
+  // Initialize BBacnetObjectIdentifier for multiple methods
+  BBacnetObjectIdentifier objectId = null;
+  
+  
+  // Setup job task on program execute
+  public void onExecute() throws Exception
+  {
+    CustomTask task = new CustomTask();
+    task.submit();
+  }
+  
+  public class CustomTask implements Runnable
+  {
+    private BRunnableJob job;
+    
+    public CustomTask()
+    {
+      job = new BRunnableJob(this);
+    }
+  
+    public void submit()
+    {
+      job.submit(null);
+    }
+  
+  
+    public void run()
+    {
+      job.log().message("Starting BACnet Export Table Generator");
+    
+      try
+      {
+        // Run method to iterate through station components and search of BACnet export table
+        if (findExportTable())
+        {
+          // Run method to delete any objects from BACnet export table
+          deleteExportObjects();
+          
+          // Run method to iterate through station components in search of device networks
+          if (findDeviceNetwork())
+          {
+            // Create new export objects from device network components
+            addExportObjects();
+            
+            // Create new csv file from export table object information
+            createExportTableCsv();
+          }
+          else
+          {
+            job.log().message("Exiting application, no driver networks found for export. Add networks and devices and try again.");
+          }
+        }
+        else
+        {
+          job.log().message("Exiting application, BACnet export table not found. Add BACnet network and try again.");
+        }
+      }
+      catch (Exception e)
+      {
+        System.out.println(e);
+      }
+      
+      job.log().message("Finished running BACnet Export Table Generator");
+    }
+      
+      
+    public boolean findExportTable() throws Exception
+    {
+      // Method is validation that a BACnet export table exists in station
+      job.log().message("Scanning station for BACnet export table");
+      
+      // Initialize return value
+      boolean exportTableFound = false;
+    
+      // Resolve components from drivers
+      BITable table = (BITable)BOrd.make("station:|slot:/Drivers|bql:select * from baja:Component").get();
+      TableCursor<BComponent> cursor = table.cursor();
+    
+      // Iterate components in search of export table
+      while(cursor.next())
+      {
+        if (cursor.get() instanceof BBacnetExportTable)
+        {
+          // Assign variables for use in other methods
+          BComponent exportTable = (BComponent)cursor.get();
+          exportTableSlotPath = exportTable.getSlotPath().toString();
+          
+          // Set return value
+          exportTableFound = true;
+  
+          job.log().message("Export table found: " + exportTableSlotPath);
+        }
+      }
+      cursor.close();
+    
+      return exportTableFound;
+    }
+    
+     
+    public boolean findDeviceNetwork() throws Exception
+    {
+      // Method is validation that atleast 1 device network found, excluding Niagara or BACnet networks
+      job.log().message("Scanning station for device networks");
+    
+      // Initialize return value
+      boolean deviceNetworkFound = false;
+    
+      // Resolve components from drivers
+      BITable table = (BITable)BOrd.make("station:|slot:/Drivers|bql:select * from baja:Component").get();
+      TableCursor<BComponent> cursor = table.cursor();
+    
+      // Iterate components in search of non Niagara or non BACnet networks
+      while(cursor.next())
+      {
+        if (cursor.get() instanceof BDeviceNetwork)
+        {
+          if ((!(cursor.get() instanceof BNiagaraNetwork)) && (!(cursor.get() instanceof BBacnetNetwork)))
+          {
+            // Set return value
+            deviceNetworkFound = true;
+  
+            job.log().message("Device network found: " + cursor.get().getSlotPath());
+          }
+        }
+      }
+      cursor.close();
+    
+      return deviceNetworkFound;
+    }
+    
+    
+    public void deleteExportObjects() throws Exception
+    {
+      job.log().message("Deleting any components in BACnet export table"); 
+     
+      // Get the export table
+      BBacnetExportTable exportTable = (BBacnetExportTable)BOrd.make("station:|" + exportTableSlotPath).get();
+      
+      // Remove all export objects
+      exportTable.removeAll();
+      
+      // Initialize instance number variables
+      ai= ao= bi= bo= msi= mso= expFldr= 1;
+    }
+    
+    
+    public String addExportFolder(String name, String slotPath, boolean networkFolder) throws Exception
+    {
+      // Method to add export folder to export table
+      job.log().message("Attempting to add " + name + " export folder");
+     
+      // Declare folder instance variable, used to calculate folder instance number
+      int folderInstance;
+    
+      // Determine folder instance, round up to next starting instance for network folder, else round up to next 100 for devices
+      if (networkFolder)
+      { folderInstance = (int)(Math.ceil(expFldr/Double.valueOf(STARTING_INSTANCE)))*STARTING_INSTANCE; }
+      else
+      { folderInstance = (int)(Math.ceil(expFldr/100.0))*100; }
+     
+      try
+      {
+        // Resolve components from slot path
+        String stationSlotPath = "station:|" + slotPath;
+        BComponent exportComponent = (BComponent)BOrd.make(stationSlotPath).get();
+       
+        // Add the new BBacnetExportFolder
+        exportComponent.add(name, new BBacnetExportFolder());
+    
+        // Resolve new folder component location
+        String folderSlotPath = stationSlotPath + "/" + name;
+        BBacnetExportFolder folder = (BBacnetExportFolder)BOrd.make(folderSlotPath).get();
+    
+        // Make the new object id from type and instance number
+        objectId = objectId.make(29, folderInstance);
+    
+        // Set the properties
+        folder.setObjectId(objectId);
+        folder.setObjectName(name);
+    
+        job.log().message("Successfully added export folder: " + folderSlotPath);
+    
+        try
+        {
+          // Rename the component folder, this name is displayed in tree
+          exportComponent.rename(exportComponent.getProperty("structuredView_" + folderInstance), name);
+        }
+        catch (Exception e)
+        {
+          job.log().message(name + " folder renaming error: " + e);
+        }
+      }
+      catch (Exception e)
+      {
+        job.log().message(name + " folder creation error: " + e);
+      }
+    
+      // Increment the expFldr instance number and set point instances to match new folder
+      expFldr = folderInstance;
+      expFldr++;
+      ai= ao= bi= bo= msi= mso= expFldr;
+    
+      return (slotPath + "/" + name);
+    }
+    
+     
+    public void addExportObjects() throws Exception
+    {
+      // Method to iterate driver compoonents to find networks, devices and control points
+      job.log().message("Scanning for objects to export");
+      
+      // Initialize method variables
+      BDeviceNetwork network = null;
+      BDevice device = null;
+      BControlPoint point = null;
+     
+      // Resolve components from drivers
+      BITable networkTable = (BITable)BOrd.make("station:|slot:/Drivers|bql:select * from baja:Component").get();
+      TableCursor<BDeviceNetwork> networkCursor = networkTable.cursor();
+    
+      // Iterate components in search of device networks
+      while(networkCursor.next())
+      {
+        if (networkCursor.get() instanceof BDeviceNetwork)
+        {
+          try
+          {
+            // Cast component as BDeviceNetwork
+            network = (BDeviceNetwork)networkCursor.get();
+          }
+          catch (ClassCastException e)
+          {
+            job.log().message("Network Case Error: " + e);
+          }
+          // Validate network not of types BNiagaraNetwork and BBacentNetwork, dont want to export these
+          if ((!(network instanceof BNiagaraNetwork)) && (!(network instanceof BBacnetNetwork)))
+          {
+            // Call method to create new export folder for this network
+            String networkFolderPath = addExportFolder(network.getName(), exportTableSlotPath, true);
+    
+            // Resolve components within this network
+            BITable deviceTable = (BITable)BOrd.make("station:|slot:/Drivers/" + network.getName().toString() + "|bql:select * from baja:Component").get();
+            TableCursor<BDevice> deviceCursor = deviceTable.cursor();
+    
+            // Iterate components in search of devices
+            while(deviceCursor.next())
+            {
+              if (deviceCursor.get() instanceof BDevice)
+              {
+                try
+                {
+                  // Cast component as BDevice
+                  device = (BDevice)deviceCursor.get();
+                }
+                catch (ClassCastException e)
+                {
+                  job.log().message("Device Cast Error: " + e);
+                }
+                // Validate device name does not contain local, avoiding local lon device at this time
+                if (!(device.getName().toString().toLowerCase().contains("local")))
+                {
+                  // Call method to create new export folder for this device
+                  String deviceFolderPath = addExportFolder(device.getName(), networkFolderPath, false);
+    
+                  // Resolve components within this device
+                  BITable pointTable = (BITable)BOrd.make("station:|" + device.getSlotPath().toString() + "|bql:select * from control:ControlPoint").get();
+                  TableCursor<BControlPoint> pointCursor = pointTable.cursor();
+    
+                  // Iterate components in search of points
+                  while(pointCursor.next())
+                  {
+                    if (pointCursor.get() instanceof BControlPoint)
+                    {
+                      try
+                      {
+                        // Cast component as BControlPoint
+                        point = (BControlPoint)pointCursor.get();
+                      }
+                      catch (ClassCastException e)
+                      {
+                        job.log().message("Point Cast Error: " + e);
+                      }
+                      // Validate point is not in a folder named non export, these names used in device templates
+                      if (!(point.getSlotPath().toString().toLowerCase().contains("nonexport")))
+                      {
+                        // Validate point found under slot containing the word points
+                        if (point.getSlotPath().toString().toLowerCase().contains("points"))
+                        {
+                          // Call method to create new export point for this device
+                          addExportPoint(point, deviceFolderPath);
+                        }
+                      }
+                    }
+                  }
+                  pointCursor.close();
+                }
+              }
+            }
+            deviceCursor.close();
+          }
+        }
+      }
+      networkCursor.close();
+    }
+    
+    
+    public void addExportPoint(BControlPoint point, String slotPath) throws Exception
+    {
+      // Method to create BACnet export objects from control points
+      job.log().message("Attempting to add " + point.getName() + " export point");
+    
+      // Resolve component location to add new point
+      String stationSlotPath = "station:|" + slotPath;
+      BComponent exportTableFolder = (BComponent) BOrd.make(stationSlotPath).get();
+    
+      // Make BString for BACnet write level
+      BString bacnetWritable = null;
+      bacnetWritable = (BString)bacnetWritable.make(BACNET_WRITABLE);
+    
+      // Get point ord
+      BOrd handleOrd = point.getHandleOrd();
+    
+      // Make formatted object name to match typical export table object name
+      String objectName = point.getSlotPath().toString().substring(point.getSlotPath().toString().indexOf('/')+1);
+      String formatedObjectName = objectName.replace('/', '.');
+      
+      System.out.println(point.getSlotPath());
+      System.out.println(objectName);
+     
+      // Call method to determine what type of point to add
+      switch (checkPointType(point))
+      {
+        case "analogInput":
+          // Add the point to export folder
+          exportTableFolder.add(point.getName(), new BBacnetAnalogInputDescriptor());
+    
+          // Resolve new point component location
+          BBacnetAnalogInputDescriptor aiPoint = (BBacnetAnalogInputDescriptor)BOrd.make(stationSlotPath + "/" + point.getName()).get();
+    
+          // Make the new object id from type and instance number
+          objectId = objectId.make(0, ai);
+    
+          // Set the properties
+          aiPoint.setObjectId(objectId);
+          aiPoint.setObjectName(formatedObjectName);
+          aiPoint.setPointOrd(handleOrd);
+          
+          // Rename the point, this name is displayed in tree
+          exportTableFolder.rename(exportTableFolder.getProperty(aiPoint.getName()), point.getName());
+    
+          // Increment the instance number
+          ai++;
+          break;
+    
+        case "analogOutput":
+          // Add the point to export folder
+          exportTableFolder.add(point.getName(), new BBacnetAnalogOutputDescriptor());
+    
+          // Resolve new point component location
+          BBacnetAnalogOutputDescriptor aoPoint = (BBacnetAnalogOutputDescriptor)BOrd.make(stationSlotPath + "/" + point.getName()).get();
+    
+          // Make the new object id from type and instance number
+          objectId = objectId.make(1, ao);
+    
+          // Set the properties, make writable
+          aoPoint.setObjectId(objectId);
+          aoPoint.setObjectName(formatedObjectName);
+          aoPoint.setPointOrd(handleOrd);
+          aoPoint.doMakeWritable(bacnetWritable.asValue());
+          
+          // Rename the point, this name is displayed in tree
+          exportTableFolder.rename(exportTableFolder.getProperty(aoPoint.getName()), point.getName());
+    
+          // Increment the instance number
+          ao++;
+          break;
+    
+        case "binaryInput":
+          // Add the point to export folder
+          exportTableFolder.add(point.getName(), new BBacnetBinaryInputDescriptor());
+    
+          // Resolve new point component location
+          BBacnetBinaryInputDescriptor biPoint = (BBacnetBinaryInputDescriptor)BOrd.make(stationSlotPath + "/" + point.getName()).get();
+    
+          // Make the new object id from type and instance number
+          objectId = objectId.make(3, bi);
+    
+          // Set the properties
+          biPoint.setObjectId(objectId);
+          biPoint.setObjectName(formatedObjectName);
+          biPoint.setPointOrd(handleOrd);
+          
+          // Rename the point, this name is displayed in tree
+          exportTableFolder.rename(exportTableFolder.getProperty(biPoint.getName()), point.getName());
+    
+          // Increment the instance number
+          bi++;
+          break;
+    
+        case "binaryOutput":
+          // Add the point to export folder
+          exportTableFolder.add(point.getName(), new BBacnetBinaryOutputDescriptor());
+    
+          // Resolve new point component location
+          BBacnetBinaryOutputDescriptor boPoint = (BBacnetBinaryOutputDescriptor)BOrd.make(stationSlotPath + "/" + point.getName()).get();
+    
+          // Make the new object id from type and instance number
+          objectId = objectId.make(4, bo);
+    
+          // Set the properties, make writable
+          boPoint.setObjectId(objectId);
+          boPoint.setObjectName(formatedObjectName);
+          boPoint.setPointOrd(handleOrd);
+          boPoint.doMakeWritable(bacnetWritable.asValue());
+          
+          // Rename the point, this name is displayed in tree
+          exportTableFolder.rename(exportTableFolder.getProperty(boPoint.getName()), point.getName());
+    
+          // Increment the instance number
+          bo++;
+          break;
+    
+        case "multiStateInput":
+          // Add the point to export folder
+          exportTableFolder.add(point.getName(), new BBacnetMultiStateInputDescriptor());
+    
+          // Resolve new point component location
+          BBacnetMultiStateInputDescriptor msiPoint = (BBacnetMultiStateInputDescriptor)BOrd.make(stationSlotPath + "/" + point.getName()).get();
+    
+          // Make the new object id from type and instance number
+          objectId = objectId.make(13, msi);
+    
+          // Set the properties
+          msiPoint.setObjectId(objectId);
+          msiPoint.setObjectName(formatedObjectName);
+          msiPoint.setPointOrd(handleOrd);
+          
+          // Rename the point, this name is displayed in tree
+          exportTableFolder.rename(exportTableFolder.getProperty(msiPoint.getName()), point.getName());
+    
+          // Increment the instance number
+          msi++;
+          break;
+    
+        case "multiStateOutput":
+          // Add the point to export folder
+          exportTableFolder.add(point.getName(), new BBacnetMultiStateOutputDescriptor());
+    
+          // Resolve new point component location
+          BBacnetMultiStateOutputDescriptor msoPoint = (BBacnetMultiStateOutputDescriptor)BOrd.make(stationSlotPath + "/" + point.getName()).get();
+    
+          // Make the new object id from type and instance number
+          objectId = objectId.make(14, mso);
+    
+          // Set the properties, make writable
+          msoPoint.setObjectId(objectId);
+          msoPoint.setObjectName(formatedObjectName);
+          msoPoint.setPointOrd(handleOrd);
+          msoPoint.doMakeWritable(bacnetWritable.asValue());
+          
+          // Rename the point, this name is displayed in tree
+          exportTableFolder.rename(exportTableFolder.getProperty(msoPoint.getName()), point.getName());
+    
+          // Increment the instance number
+          mso++;
+          break;
+      }
+      job.log().message("Successfully added " + stationSlotPath + "/" + point.getName());
+    }
+    
+     
+    public String checkPointType(BControlPoint point) throws Exception
+    {
+      // Method to determine what point instance and if writable type
+      
+      // Initialize return value
+      String type = "";
+     
+      if (point instanceof BNumericPoint)
+      {
+        if (point.isWritablePoint()) {type = "analogOutput";}
+        else {type = "analogInput";}
+      }
+      if (point instanceof BBooleanPoint)
+      {
+        if (point.isWritablePoint()) {type = "binaryOutput";}
+        else {type = "binaryInput";}
+      }
+      if (point instanceof BEnumPoint)
+      {
+        if (point.isWritablePoint()) {type = "multiStateOutput";}
+        else {type = "multiStateInput";}
+      }
+    
+      return type;
+    }
+    
+    
+    public void createExportTableCsv() throws Exception
+    {
+      // Method to create csv file from export table
+      job.log().message("Attempting to build export table csv file");
+    
+      // Get date and time for file name, using getTimeOfDayMillis method keeps filename unique
+      BAbsTime time = Clock.time();
+      String dateTime = String.valueOf(time.getMonth().getMonthOfYear() + "-" + time.getDay() + "-" + time.getYear() + "_" + time.getTimeOfDayMillis());
+      
+      // Create filename for csv file
+      String fileName = "BACnetExportTable_" + dateTime + ".csv";
+      
+      // Create new folder and file for export table data
+      BOrd fileOrd = BOrd.make("file:^exportTableFiles/" + fileName);
+      
+      // Declare and initalize required variables
+      BIFile file = null;
+      FileWriter fileWriter = null;
+      
+      try
+      {
+        // Parse the file ord and get file path object
+        OrdQuery[] query = fileOrd.parse();
+        FilePath filePath = (FilePath)query[0];
+    
+        // Make the new file
+        file = BFileSystem.INSTANCE.makeFile(filePath);
+        
+        try
+        {
+          // Get the new file and setup a new file writer object
+          File localFile = BFileSystem.INSTANCE.pathToLocalFile(file.getFilePath());
+          fileWriter = new FileWriter(localFile, false);
+          
+          try
+          {
+            // Get information about station from platform services
+            BSystemPlatformService platform = (BSystemPlatformService)BOrd.make("station:|slot:/Services/PlatformServices/SystemService").get();
+            String stationName = platform.getStationName();
+            String systemTime = platform.getSystemTime().toString();
+            String hostId = platform.getHostId();
+            String version = platform.getNiagaraVersion();
+          
+            // Get station BACnet object id
+            BLocalBacnetDevice localDevice = (BLocalBacnetDevice)BOrd.make("station:|slot:/Drivers/BacnetNetwork/localDevice").get();
+            String localObjectId = localDevice.getObjectId().toString();
+        
+            // Get station BACnet/IP address and udp port
+            BBacnetLinkLayer linkLayer = (BBacnetLinkLayer)BOrd.make("station:|slot:/Drivers/BacnetNetwork/bacnetComm/network/ipPort/link").get();
+            String linkInfo = linkLayer.toString();
+        
+            // Get station BACnet network number
+            BNetworkPort networkPort = (BNetworkPort)BOrd.make("station:|slot:/Drivers/BacnetNetwork/bacnetComm/network/ipPort").get();
+            int networkNumber = networkPort.getNetworkNumber();
+            
+            // Write the summary of station and BACnet information to the first line of the csv file
+            fileWriter.write("StationName:" + stationName + " HostId:" + hostId + " NiagaraVersion:" + version + " BACnetComm:" + linkInfo + " network: " + networkNumber + " " + localObjectId + "\n");
+            fileWriter.append('\n');
+            
+          }
+          catch (Exception e)
+          {
+            job.log().message("Failed writing Station and BACnet information, error: " + e);
+          }
+          
+          try
+          {
+            // Write the header for export table data
+            fileWriter.write("Network Name,Device Name,Point Name,Point Type,Instance Number,Object Name\n");
+      
+            // Resolve bacnet export table query
+            BITable table = (BITable)BOrd.make("station:|" + exportTableSlotPath + "|bql:select * from baja:Component").get();
+            TableCursor<BComponent> cursor = table.cursor();
+          
+            // Initialize variables for names from export folders
+            String networkName = null;
+            String deviceName = null;
+            
+            while(cursor.next())
+            { 
+              // Check if component is BBacnetExportFolder, set string variables for naming the export points
+              if (cursor.get() instanceof BBacnetExportFolder)
+              {
+                String folderName = cursor.get().getName();
+                
+                // Determine if folder is device or network and set folder name
+                if (folderName.toLowerCase().contains("network"))
+                {
+                  networkName = folderName;
+                }
+                else
+                {
+                  deviceName = folderName;
+                }
+              }
+              
+              // Check if component is BBacnetPointDescriptor
+              if (cursor.get() instanceof BBacnetPointDescriptor)
+              {
+                // Get information about the export point
+                BBacnetPointDescriptor point = (BBacnetPointDescriptor)cursor.get();
+                String pointName = point.getName();
+                String pointType = point.getObjectId().toString().substring(0, point.getObjectId().toString().indexOf(":"));
+                String instanceNumber = point.getObjectId().toString().substring(point.getObjectId().toString().indexOf(":")+1);
+                String objectName = point.getObjectName().toString();
+                
+                // Write the export point data to the csv file
+                fileWriter.write(networkName + "," + deviceName + "," + pointName + "," + pointType + "," + instanceNumber + "," + objectName);
+                fileWriter.append('\n');
+              }
+            }
+            cursor.close();
+          }
+          catch (Exception e)
+          {
+            job.log().message("Failed writing BACnet export table information, error: " + e);
+          }
+        }
+        catch (Exception e)
+        {
+          job.log().message("Failed retrieving new file, error: " + e);
+        }
+        finally
+        {
+          if (fileWriter != null)
+          {
+            fileWriter.close();
+            job.log().message("Successfully created csv " + filePath);
+          }
+        }
+      }
+      catch (IOException ioe)
+      {
+        job.log().message("Failed creating file " + fileName + " error: " + ioe);
+      }
+    }
+  
+  }
+  
+  
+  
+  
+  
+  
+  
+}
