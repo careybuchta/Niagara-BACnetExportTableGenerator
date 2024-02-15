@@ -41,12 +41,6 @@ public class ProgramImpl
   This program is designed to iterate through station driver networks and automate the creation of BACnet
   export objects from BControl points under the driver network devices.
   
-  *Version Information
-  0.0 - Initial creation of program
-  1.0 - Working version of program concept 
-  1.1 - Added creation of csv file for BACnet export points
-  1.2 - Modified program to run as a job service
-  
   *Program Details
   1. Iterate through station components and locate the BACnet export table. 
      If the table exits then assign the export table slot path to a variable. Else exit program.
@@ -62,7 +56,6 @@ public class ProgramImpl
   *Note 
   To have better export table layout, recommend sorting devices into common device type folders
   in each network before running program so instance numbers will be created in a common pattern.
-  
   */
   
   // Declare variables to hold instance numbers for export objects
@@ -713,13 +706,6 @@ public class ProgramImpl
         job.log().message("Failed creating file " + fileName + " error: " + ioe);
       }
     }
-  
   }
-  
-  
-  
-  
-  
-  
   
 }
