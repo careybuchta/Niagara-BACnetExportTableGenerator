@@ -218,6 +218,116 @@ public class ProgramImpl
     }
     
     
+    // Originally checking for instance number conflicts, changed to just delete export table components. Leave in code for now.
+    /*
+    public boolean validateStartingInstance() throws Exception
+    {
+      // Validate starting instance is greater than existing export object instance numbers to prevent duplication
+      job.log().message("Validating existing export object instance numbers");
+    
+      // Initialize instance number variables
+      ai= ao= bi= bo= msi= mso= expFldr= 0;
+      int maxInstanceNumber = 0;
+    
+      // Initialize return value
+      boolean startingInstanceOk = false;
+    
+      // Declare required variables
+      String objectType;
+      int objectInstance;
+    
+      // Resolve components from export table
+      BITable table = (BITable)BOrd.make("station:|" + exportTableSlotPath + "|bql:select * from baja:Component").resolve().get();
+      TableCursor<BComponent> cursor = table.cursor();
+    
+      // Iterate components in export table
+      while(cursor.next())
+      {
+        if (cursor.get() instanceof BBacnetPointDescriptor)
+        {
+          try
+          {
+            // Cast component as BBacnetPointDescriptor
+            BBacnetPointDescriptor point = (BBacnetPointDescriptor)cursor.get();
+           
+            // Get object type and instance number
+            objectType = point.getObjectId().toString().substring(0, point.getObjectId().toString().indexOf(':'));
+            objectInstance = Integer.parseInt(point.getObjectId().toString().substring(point.getObjectId().toString().indexOf(':')+1));
+           
+            // Assign object instance to variable if greater, assign variable to max instance if greater
+            switch (objectType)
+            {
+              case "analogInput":
+                if (objectInstance > ai) {ai = objectInstance;}
+                if (ai > maxInstanceNumber) {maxInstanceNumber = ai;}
+                break;
+     
+              case "analogOutput":
+                if (objectInstance > ao) {ao = objectInstance;}
+                if (ao > maxInstanceNumber) {maxInstanceNumber = ao;}
+                break;
+     
+              case "binaryInput":
+                if (objectInstance > bi) {bi = objectInstance;}
+                if (bi > maxInstanceNumber) {maxInstanceNumber = bi;}
+                break;
+     
+              case "binaryOutput":
+                if (objectInstance > bo) {bo = objectInstance;}
+                if (bo > maxInstanceNumber) {maxInstanceNumber = bo;}
+                break;
+     
+              case "multiStateInput":
+                if (objectInstance > msi) {msi = objectInstance;}
+                if (msi > maxInstanceNumber) {maxInstanceNumber = msi;}
+                break;
+     
+              case "multiStateOutput":
+                if (objectInstance > mso) {mso = objectInstance;}
+                if (mso > maxInstanceNumber) {maxInstanceNumber = mso;}
+                break;
+            }
+          }
+          catch (Exception e)
+          {
+            System.out.println("BBacnetPointDescriptor casting error: " + e);
+          }  
+        }
+       
+        if (cursor.get() instanceof BBacnetExportFolder)
+        {
+          try
+          {
+            // Cast component as BBacnetExportFolder
+            BBacnetExportFolder folder = (BBacnetExportFolder)cursor.get();
+           
+            // Get object type and instance number
+            objectType = folder.getObjectId().toString().substring(0, folder.getObjectId().toString().indexOf(':'));
+            objectInstance = Integer.parseInt(folder.getObjectId().toString().substring(folder.getObjectId().toString().indexOf(':')+1));
+     
+            // Assign object instance to variable if greater, assign variable to max instance if greater
+            if (objectInstance > expFldr) {expFldr = objectInstance;}
+            if (expFldr > maxInstanceNumber) {maxInstanceNumber = expFldr;}
+          }
+          catch (Exception e)
+          {
+            System.out.println("BBacnetExportFolder casting error: " + e);
+          }
+        }
+      }
+      cursor.close();
+    
+      // Validate starting instance is greater than max instance
+      if (STARTING_INSTANCE > maxInstanceNumber) {startingInstanceOk = true;}
+    
+      // If starting instance is validated then set expFldr to starting instance
+      if (startingInstanceOk) {expFldr = STARTING_INSTANCE;}
+     
+      return startingInstanceOk;
+    }
+    */
+    
+    
     public String addExportFolder(String name, String slotPath, boolean networkFolder) throws Exception
     {
       // Method to add export folder to export table
@@ -345,23 +455,26 @@ public class ProgramImpl
                   {
                     if (pointCursor.get() instanceof BControlPoint)
                     {
-                      try
+                      if (!(pointCursor.get().getType().toString().contains("kitControl")))
                       {
-                        // Cast component as BControlPoint
-                        point = (BControlPoint)pointCursor.get();
-                      }
-                      catch (ClassCastException e)
-                      {
-                        job.log().message("Point Cast Error: " + e);
-                      }
-                      // Validate point is not in a folder named non export, these names used in device templates
-                      if (!(point.getSlotPath().toString().toLowerCase().contains("nonexport")))
-                      {
-                        // Validate point found under slot containing the word points
-                        if (point.getSlotPath().toString().toLowerCase().contains("points"))
+                        try
                         {
-                          // Call method to create new export point for this device
-                          addExportPoint(point, deviceFolderPath);
+                          // Cast component as BControlPoint
+                          point = (BControlPoint)pointCursor.get();
+                        }
+                        catch (ClassCastException e)
+                        {
+                          job.log().message("Point Cast Error: " + e);
+                        }
+                        // Validate point is not in a folder named non export, these names used in device templates
+                        if (!(point.getSlotPath().toString().toLowerCase().contains("nonexport")))
+                        {
+                          // Validate point found under slot containing the word points
+                          if (point.getSlotPath().toString().toLowerCase().contains("points"))
+                          {
+                            // Call method to create new export point for this device
+                            addExportPoint(point, deviceFolderPath);
+                          }
                         }
                       }
                     }
@@ -707,5 +820,4 @@ public class ProgramImpl
       }
     }
   }
-  
 }
