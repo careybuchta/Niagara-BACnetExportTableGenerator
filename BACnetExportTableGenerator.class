@@ -34,7 +34,7 @@ public class ProgramImpl
 ////////////////////////////////////////////////////////////////
 
   /*
-  BACnet Export Wizard
+  BACnet Export Table Generator
   Written by Carey Buchta Jan 2024
   
   *Program Summary
